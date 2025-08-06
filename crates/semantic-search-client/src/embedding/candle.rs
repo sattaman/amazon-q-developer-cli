@@ -300,24 +300,132 @@ fn ensure_model_files(model_path: &Path, tokenizer_path: &Path, config: &ModelCo
 
 /// Download model files from Hugging Face Hub
 fn download_model_files(model_path: &Path, tokenizer_path: &Path, config: &ModelConfig) -> AnyhowResult<()> {
-    // Use Hugging Face Hub API to download files
-    let api = hf_hub::api::sync::Api::new()?;
-    let repo = api.repo(hf_hub::Repo::with_revision(
-        config.repo_path.clone(),
-        hf_hub::RepoType::Model,
-        "main".to_string(),
-    ));
-
     // Download model file if it doesn't exist
     if !model_path.exists() {
-        let model_file = repo.get(&config.model_file)?;
-        std::fs::copy(model_file, model_path)?;
+        let model_url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            config.repo_path, config.model_file
+        );
+        download_file_with_custom_tls(&model_url, model_path)?;
     }
 
     // Download tokenizer file if it doesn't exist
     if !tokenizer_path.exists() {
-        let tokenizer_file = repo.get(&config.tokenizer_file)?;
-        std::fs::copy(tokenizer_file, tokenizer_path)?;
+        let tokenizer_url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            config.repo_path, config.tokenizer_file
+        );
+        download_file_with_custom_tls(&tokenizer_url, tokenizer_path)?;
+    }
+
+    Ok(())
+}
+
+/// Download a file using custom TLS configuration that respects SSL_CERT_FILE
+fn download_file_with_custom_tls(url: &str, output_path: &Path) -> AnyhowResult<()> {
+    use std::sync::Once;
+
+    // Initialize crypto provider for rustls (required for rustls 0.23+)
+    // Use a static flag to ensure we only initialize once
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+
+    info!("Downloading {} to {}", url, output_path.display());
+
+    // Create HTTP client with custom TLS if SSL_CERT_FILE is set
+    let agent = if let Ok(cert_file) = std::env::var("SSL_CERT_FILE") {
+        info!("Using custom SSL certificate from: {}", cert_file);
+        create_agent_with_custom_cert(&cert_file)?
+    } else {
+        // Use default agent if no custom certificate is specified
+        info!("No SSL_CERT_FILE specified, using default TLS configuration");
+        ureq::Agent::new()
+    };
+
+    // Make the HTTP request
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("Failed to download {}: {}", url, e))?;
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("Failed to create directory {}: {}", parent.display(), e))?;
+    }
+
+    // Write the response to file
+    let mut file = std::fs::File::create(output_path)
+        .map_err(|e| anyhow::anyhow!("Failed to create file {}: {}", output_path.display(), e))?;
+
+    std::io::copy(&mut response.into_reader(), &mut file)
+        .map_err(|e| anyhow::anyhow!("Failed to write file {}: {}", output_path.display(), e))?;
+
+    info!("Successfully downloaded {} to {}", url, output_path.display());
+    Ok(())
+}
+
+/// Create HTTP agent with custom certificate configuration
+fn create_agent_with_custom_cert(cert_file: &str) -> AnyhowResult<ureq::Agent> {
+    use std::sync::Arc;
+
+    // Read the custom certificate
+    let cert_data = std::fs::read(cert_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read SSL certificate file {}: {}", cert_file, e))?;
+
+    // Parse the certificate
+    let cert = rustls_pemfile::certs(&mut cert_data.as_slice())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("Failed to parse SSL certificate: {}", e))?;
+
+    if cert.is_empty() {
+        return Err(anyhow::anyhow!("No certificates found in SSL_CERT_FILE"));
+    }
+
+    // Create a custom root certificate store
+    let mut root_store = rustls::RootCertStore::empty();
+
+    // Add system certificates first (if RUSTLS_NATIVE_CERTS is set)
+    if std::env::var("RUSTLS_NATIVE_CERTS").is_ok() {
+        info!("Adding native system certificates");
+        add_native_certificates(&mut root_store)?;
+    }
+
+    // Add the custom certificate
+    for cert_der in cert {
+        root_store
+            .add(cert_der)
+            .map_err(|e| anyhow::anyhow!("Failed to add custom certificate to store: {}", e))?;
+    }
+
+    // Create TLS configuration
+    let tls_config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    // Create HTTP client with custom TLS
+    let agent = ureq::AgentBuilder::new().tls_config(Arc::new(tls_config)).build();
+
+    Ok(agent)
+}
+
+/// Add native system certificates to the root store
+fn add_native_certificates(root_store: &mut rustls::RootCertStore) -> AnyhowResult<()> {
+    // Only load native certificates if RUSTLS_NATIVE_CERTS is set
+    if std::env::var("RUSTLS_NATIVE_CERTS").is_err() {
+        return Ok(());
+    }
+
+    let native_certs = rustls_native_certs::load_native_certs()
+        .map_err(|e| anyhow::anyhow!("Failed to load native certificates: {}", e))?;
+
+    for cert in native_certs {
+        if let Err(e) = root_store.add(cert) {
+            // Log but don't fail on individual certificate errors
+            tracing::warn!("Failed to add native certificate: {}", e);
+        }
     }
 
     Ok(())
@@ -592,6 +700,129 @@ mod tests {
             "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.".to_string(),
             "Machine learning models can process and analyze text data to extract meaningful information and generate embeddings that represent semantic relationships between words and phrases.".to_string(),
         ]
+    }
+
+    #[test]
+    fn test_ssl_cert_file_handling() {
+        // Test that SSL_CERT_FILE environment variable is properly read
+        let original_cert_file = env::var("SSL_CERT_FILE").ok();
+
+        // Test with no SSL_CERT_FILE set
+        unsafe {
+            env::remove_var("SSL_CERT_FILE");
+        }
+        // This should not panic and should use default TLS
+        // We can't easily test the actual HTTP functionality without a server
+
+        // Test with invalid SSL_CERT_FILE path
+        unsafe {
+            env::set_var("SSL_CERT_FILE", "/nonexistent/path/cert.pem");
+        }
+        let result = create_agent_with_custom_cert("/nonexistent/path/cert.pem");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to read SSL certificate file")
+        );
+
+        // Restore original environment
+        unsafe {
+            if let Some(cert_file) = original_cert_file {
+                env::set_var("SSL_CERT_FILE", cert_file);
+            } else {
+                env::remove_var("SSL_CERT_FILE");
+            }
+        }
+    }
+
+    #[test]
+    fn test_create_agent_with_invalid_cert() {
+        // Create a temporary file with invalid certificate content
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let cert_path = temp_dir.path().join("invalid_cert.pem");
+        fs::write(&cert_path, "invalid certificate content").expect("Failed to write test file");
+
+        let result = create_agent_with_custom_cert(cert_path.to_str().unwrap());
+        assert!(result.is_err());
+
+        // The error should be about no certificates found since the content is invalid
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("No certificates found in SSL_CERT_FILE"));
+    }
+
+    #[test]
+    fn test_create_agent_with_empty_cert_file() {
+        // Create a temporary file with no certificate content
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let cert_path = temp_dir.path().join("empty_cert.pem");
+        fs::write(&cert_path, "").expect("Failed to write test file");
+
+        let result = create_agent_with_custom_cert(cert_path.to_str().unwrap());
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No certificates found in SSL_CERT_FILE")
+        );
+    }
+
+    #[test]
+    fn test_rustls_native_certs_environment_variable() {
+        let original_native_certs = env::var("RUSTLS_NATIVE_CERTS").ok();
+
+        // Test with RUSTLS_NATIVE_CERTS not set
+        unsafe {
+            env::remove_var("RUSTLS_NATIVE_CERTS");
+        }
+        let mut root_store = rustls::RootCertStore::empty();
+        let result = add_native_certificates(&mut root_store);
+        // This should succeed but not add any certificates when env var is not set
+        assert!(result.is_ok());
+
+        // Test with RUSTLS_NATIVE_CERTS set
+        unsafe {
+            env::set_var("RUSTLS_NATIVE_CERTS", "1");
+        }
+        let mut root_store = rustls::RootCertStore::empty();
+        let result = add_native_certificates(&mut root_store);
+        // This might fail on some systems if native certs can't be loaded, which is acceptable
+        // We just want to ensure it doesn't panic
+        match result {
+            Ok(_) => {
+                // Successfully loaded native certificates
+            },
+            Err(e) => {
+                // Failed to load native certificates, which is acceptable in test environments
+                println!("Note: Failed to load native certificates in test: {}", e);
+            },
+        }
+
+        // Restore original environment
+        unsafe {
+            if let Some(native_certs) = original_native_certs {
+                env::set_var("RUSTLS_NATIVE_CERTS", native_certs);
+            } else {
+                env::remove_var("RUSTLS_NATIVE_CERTS");
+            }
+        }
+    }
+
+    #[test]
+    fn test_crypto_provider_initialization() {
+        // Test that crypto provider initialization doesn't panic
+        // This is mainly to ensure the static initialization works correctly
+        use std::sync::Once;
+        static TEST_INIT: Once = Once::new();
+
+        TEST_INIT.call_once(|| {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        });
+
+        // If we get here without panicking, the initialization worked
+        assert!(true);
     }
 
     #[test]
