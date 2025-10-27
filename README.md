@@ -10,6 +10,29 @@
   - [AppImage](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-installing.html#command-line-installing-appimage)
   - [Alternative Linux builds](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-installing.html#command-line-installing-alternative-linux)
 
+## Observability
+
+Amazon Q CLI includes built-in observability features for capturing conversation traces:
+
+```bash
+# Enable tracing
+q chat --trace "Your question"
+
+# With Langfuse integration
+export LANGFUSE_SECRET_KEY=sk-lf-...
+export LANGFUSE_PUBLIC_KEY=pk-lf-...
+export LANGFUSE_HOST=http://localhost:3000
+q chat --trace --langfuse "Your question"
+
+# View traces
+cat ~/.q/traces/*.jsonl | jq .
+```
+
+**Documentation:**
+- [User Guide](OBSERVABILITY.md) - Usage and troubleshooting
+- [Developer Guide](DEVELOPER_GUIDE.md) - Implementation details
+- [Roadmap](ROADMAP.md) - Current status and planned features
+
 ## Contributing
 
 Thank you so much for considering to contribute to Amazon Q.

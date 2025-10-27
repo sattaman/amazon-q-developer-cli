@@ -6,6 +6,7 @@ mod constants;
 mod database;
 mod logging;
 mod mcp_client;
+mod observability;
 mod os;
 mod request;
 mod telemetry;

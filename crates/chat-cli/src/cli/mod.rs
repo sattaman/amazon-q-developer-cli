@@ -382,6 +382,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })),
             verbose: 2,
@@ -422,6 +425,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -439,6 +445,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -456,6 +465,9 @@ mod test {
                 trust_all_tools: true,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -473,6 +485,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: true,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -486,6 +501,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: true,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -503,6 +521,9 @@ mod test {
                 trust_all_tools: true,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -520,6 +541,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: Some(vec!["".to_string()]),
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -537,6 +561,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: Some(vec!["fs_read".to_string(), "fs_write".to_string()]),
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: None,
             })
         );
@@ -554,6 +581,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: Some(Never),
             })
         );
@@ -567,6 +597,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: Some(Always),
             })
         );
@@ -580,6 +613,9 @@ mod test {
                 trust_all_tools: false,
                 trust_tools: None,
                 no_interactive: false,
+                trace: false,
+                trace_dir: None,
+                langfuse: false,
                 wrap: Some(Auto),
             })
         );

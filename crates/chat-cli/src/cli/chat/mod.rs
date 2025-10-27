@@ -9,6 +9,7 @@ mod input_source;
 mod message;
 mod parse;
 use std::path::MAIN_SEPARATOR;
+use std::path::PathBuf;
 pub mod checkpoint;
 mod line_tracker;
 mod parser;
@@ -239,6 +240,15 @@ pub struct ChatArgs {
     /// Control line wrapping behavior (default: auto-detect)
     #[arg(short = 'w', long, value_enum)]
     pub wrap: Option<WrapMode>,
+    /// Enable observability tracing (JSONL output)
+    #[arg(long)]
+    pub trace: bool,
+    /// Custom trace output directory
+    #[arg(long)]
+    pub trace_dir: Option<PathBuf>,
+    /// Enable Langfuse integration
+    #[arg(long)]
+    pub langfuse: bool,
 }
 
 impl ChatArgs {
@@ -425,6 +435,25 @@ impl ChatArgs {
             .await?;
         let tool_config = tool_manager.load_tools(os, &mut stderr).await?;
 
+        // Initialize trace collector if tracing is enabled
+        let trace_collector = if self.trace {
+            let config = crate::observability::ObservabilityConfig {
+                enabled: true,
+                output_dir: self.trace_dir.clone().unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .unwrap_or_default()
+                        .join(".q")
+                        .join("traces")
+                }),
+                langfuse_api_key: std::env::var("LANGFUSE_SECRET_KEY").ok(),
+                langfuse_public_key: std::env::var("LANGFUSE_PUBLIC_KEY").ok(),
+                langfuse_api_url: std::env::var("LANGFUSE_HOST").ok(),
+            };
+            Some(Arc::new(crate::observability::TraceCollector::new(config)))
+        } else {
+            None
+        };
+
         ChatSession::new(
             os,
             &conversation_id,
@@ -439,6 +468,7 @@ impl ChatArgs {
             !self.no_interactive,
             mcp_enabled,
             self.wrap,
+            trace_collector,
         )
         .await?
         .spawn(os)
@@ -602,6 +632,8 @@ pub struct ChatSession {
     inner: Option<ChatState>,
     ctrlc_rx: broadcast::Receiver<()>,
     wrap: Option<WrapMode>,
+    /// Observability trace collector
+    trace_collector: Option<Arc<crate::observability::TraceCollector>>,
 }
 
 impl ChatSession {
@@ -620,6 +652,7 @@ impl ChatSession {
         interactive: bool,
         mcp_enabled: bool,
         wrap: Option<WrapMode>,
+        trace_collector: Option<Arc<crate::observability::TraceCollector>>,
     ) -> Result<Self> {
         // Only load prior conversation if we need to resume
         let mut existing_conversation = false;
@@ -736,6 +769,7 @@ impl ChatSession {
             inner: Some(ChatState::default()),
             ctrlc_rx,
             wrap,
+            trace_collector,
         })
     }
 
@@ -1943,6 +1977,17 @@ impl ChatSession {
         user_input = sanitize_unicode_tags(&user_input);
         let input = user_input.trim();
 
+        // Emit trace event for user prompt
+        if let Some(ref collector) = self.trace_collector {
+            let event = crate::observability::TraceEvent::UserPrompt {
+                trace_id: collector.trace_id(),
+                turn_index: collector.current_turn(),
+                timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                user_input: input.to_string(),
+            };
+            collector.emit(event);
+        }
+
         // handle image path
         if let Some(chat_state) = does_input_reference_file(input) {
             return Ok(chat_state);
@@ -2587,7 +2632,7 @@ impl ChatSession {
 
         if !image_blocks.is_empty() {
             let images = image_blocks.into_iter().map(|(block, _)| block).collect();
-            self.conversation.add_tool_results_with_images(tool_results, images);
+            self.conversation.add_tool_results_with_images(tool_results.clone(), images);
             execute!(
                 self.stderr,
                 StyledText::reset_attributes(),
@@ -2595,6 +2640,28 @@ impl ChatSession {
                 style::Print("\n")
             )?;
         } else {
+            // Emit trace events for tool results
+            if let Some(ref collector) = self.trace_collector {
+                for result in &tool_results {
+                    let output = result.content.iter()
+                        .map(|block| match block {
+                            ToolUseResultBlock::Text(text) => text.clone(),
+                            ToolUseResultBlock::Json(json) => json.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    
+                    let event = crate::observability::TraceEvent::ToolOutput {
+                        trace_id: collector.trace_id(),
+                        turn_index: collector.current_turn(),
+                        timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                        tool_use_id: result.tool_use_id.clone(),
+                        tool_output: output,
+                    };
+                    collector.emit(event);
+                }
+            }
+            
             self.conversation.add_tool_results(tool_results);
         }
 
@@ -2700,6 +2767,23 @@ impl ChatSession {
                             if self.spinner.is_some() {
                                 drop(self.spinner.take());
                             }
+                            
+                            // Emit trace event for tool execution
+                            if let Some(ref collector) = self.trace_collector {
+                                let tool_call = crate::observability::events::ToolCall {
+                                    name: tool_use.name.clone(),
+                                    tool_use_id: tool_use.id.clone(),
+                                    params: tool_use.args.clone(),
+                                };
+                                let event = crate::observability::TraceEvent::ToolExecute {
+                                    trace_id: collector.trace_id(),
+                                    turn_index: collector.current_turn(),
+                                    timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                                    tool_calls_executed: vec![tool_call],
+                                };
+                                collector.emit(event);
+                            }
+                            
                             tool_uses.push(tool_use);
                             tool_name_being_recvd = None;
                         },
@@ -2712,6 +2796,19 @@ impl ChatSession {
                             if message.content() == RESPONSE_TIMEOUT_CONTENT {
                                 error!(?request_id, ?message, "Encountered an unexpected model response");
                             }
+                            
+                            // Emit trace event for final response
+                            if let Some(ref collector) = self.trace_collector {
+                                let event = crate::observability::TraceEvent::FinalResponse {
+                                    trace_id: collector.trace_id(),
+                                    turn_index: collector.current_turn(),
+                                    timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                                    final_response: message.content().to_string(),
+                                };
+                                collector.emit(event);
+                                collector.increment_turn();
+                            }
+                            
                             self.conversation.push_assistant_message(os, message, Some(rm.clone()));
                             self.user_turn_request_metadata.push(rm);
                             ended = true;
@@ -3844,6 +3941,7 @@ mod tests {
             true,
             false,
             None,
+            None,
         )
         .await
         .unwrap()
@@ -3985,6 +4083,7 @@ mod tests {
             true,
             false,
             None,
+            None,
         )
         .await
         .unwrap()
@@ -4081,6 +4180,7 @@ mod tests {
             true,
             false,
             None,
+            None,
         )
         .await
         .unwrap()
@@ -4155,6 +4255,7 @@ mod tests {
             true,
             false,
             None,
+            None,
         )
         .await
         .unwrap()
@@ -4204,6 +4305,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
             None,
         )
         .await
@@ -4311,6 +4413,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
             None,
         )
         .await
@@ -4441,6 +4544,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
             None,
         )
         .await

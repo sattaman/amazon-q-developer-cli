@@ -99,6 +99,18 @@ impl ReplyArgs {
                         style::Print("\n")
                     )?;
 
+                    // Emit trace event for user interrupt
+                    if let Some(ref collector) = session.trace_collector {
+                        let event = crate::observability::TraceEvent::UserInterrupt {
+                            trace_id: collector.trace_id(),
+                            turn_index: collector.current_turn(),
+                            timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                            interrupt_flag: true,
+                            user_input: content.clone(),
+                        };
+                        collector.emit(event);
+                    }
+
                     // Process the content as user input
                     ChatState::HandleInput { input: content }
                 },
