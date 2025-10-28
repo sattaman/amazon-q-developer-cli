@@ -14,10 +14,13 @@ pub struct LangfuseOtelSink {
 impl LangfuseOtelSink {
     pub fn new(api_key: String, public_key: String, api_url: Option<String>) -> Result<Self, Box<dyn std::error::Error>> {
         // Set environment variables for ExporterBuilder
+        // SAFETY: set_var is unsafe because it can cause data races if other threads
+        // are reading environment variables. We call this during initialization before
+        // spawning any worker threads, making it safe in this context.
         unsafe {
             std::env::set_var("LANGFUSE_SECRET_KEY", &api_key);
             std::env::set_var("LANGFUSE_PUBLIC_KEY", &public_key);
-            if let Some(url) = api_url {
+            if let Some(url) = &api_url {
                 std::env::set_var("LANGFUSE_HOST", url);
             }
         }

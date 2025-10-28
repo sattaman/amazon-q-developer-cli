@@ -85,10 +85,16 @@ impl TraceCollector {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Emits a trace event to all configured sinks.
+    /// Events are processed asynchronously and won't block the caller.
     pub fn emit(&self, event: TraceEvent) {
-        let _ = self.tx.send(event);
+        if let Err(e) = self.tx.send(event) {
+            tracing::error!("Failed to emit trace event: {:?}", e);
+        }
     }
     
+    /// Flushes all pending trace events to configured sinks.
+    /// This should be called before application shutdown to ensure all events are delivered.
     pub async fn flush(&self) {
         eprintln!("🔄 Collector flush called");
         if let Some(ref lf) = self.langfuse_sink {

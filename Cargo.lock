@@ -5058,6 +5058,8 @@ dependencies = [
 [[package]]
 name = "opentelemetry-langfuse"
 version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdf0850d726fff16d51ae5b2159245581323cbb58ac8ccdb19d335530a2099d6"
 dependencies = [
  "base64 0.22.1",
  "opentelemetry",

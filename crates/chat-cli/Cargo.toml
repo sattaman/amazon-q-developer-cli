@@ -123,7 +123,7 @@ rmcp.workspace = true
 chat-cli-ui.workspace = true
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["trace", "rt-tokio"] }
-opentelemetry-langfuse = { path = "/Users/thomas.sanderson/Documents/opentelemetry-langfuse" } 
+opentelemetry-langfuse = "0.6" 
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
