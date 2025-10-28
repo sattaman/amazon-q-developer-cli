@@ -847,7 +847,13 @@ impl ChatSession {
                     Err(ChatError::Interrupted { tool_uses: None })
                 }
             },
-            ChatState::Exit => return Ok(()),
+            ChatState::Exit => {
+                // Flush observability events before exit
+                if let Some(ref collector) = self.trace_collector {
+                    collector.flush().await;
+                }
+                return Ok(());
+            }
         };
 
         let err = match result {

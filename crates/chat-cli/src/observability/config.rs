@@ -17,7 +17,6 @@ impl Default for ObservabilityConfig {
                 .unwrap_or_default()
                 .join(".q")
                 .join("traces"),
-            langfuse_enabled: false,
             langfuse_api_key: None,
             langfuse_public_key: None,
             langfuse_api_url: None,
