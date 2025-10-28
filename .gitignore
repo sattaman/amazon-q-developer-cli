@@ -36,6 +36,7 @@ book/
 .vscode/
 .fleet/
 .idea/
+notes
 
 # yarn v2
 .pnp.*

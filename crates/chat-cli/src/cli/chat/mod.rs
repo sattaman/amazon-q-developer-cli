@@ -1398,6 +1398,11 @@ impl ChatSession {
             self.next(os).await?;
         }
 
+        // Flush observability events after conversation completes
+        if let Some(ref collector) = self.trace_collector {
+            collector.flush().await;
+        }
+
         Ok(())
     }
 
@@ -2814,6 +2819,21 @@ impl ChatSession {
                             }
                             buf.push_str(&text);
                         },
+                        parser::ResponseEvent::ReasoningContent(reasoning_text) => {
+                            // Emit trace event for agent thought (CoT)
+                            if let Some(ref collector) = self.trace_collector {
+                                let event = crate::observability::TraceEvent::AgentThought {
+                                    trace_id: collector.trace_id(),
+                                    turn_index: collector.current_turn(),
+                                    timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                                    agent_thought_trace: reasoning_text.clone(),
+                                };
+                                collector.emit(event);
+                            }
+                            
+                            // Log reasoning content for debugging
+                            trace!("Chain of thought reasoning: {}", reasoning_text);
+                        },
                         parser::ResponseEvent::ToolUse(tool_use) => {
                             if self.spinner.is_some() {
                                 drop(self.spinner.take());
@@ -2838,6 +2858,21 @@ impl ChatSession {
                                     tool_calls_executed: vec![tool_call],
                                 };
                                 collector.emit(event);
+                                
+                                // Special handling for thinking tool - extract reasoning content
+                                if tool_use.name == "thinking" {
+                                    if let Some(thought_value) = tool_use.args.get("thought") {
+                                        if let Some(thought_text) = thought_value.as_str() {
+                                            let agent_thought_event = crate::observability::TraceEvent::AgentThought {
+                                                trace_id: collector.trace_id(),
+                                                turn_index: collector.current_turn(),
+                                                timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                                                agent_thought_trace: thought_text.to_string(),
+                                            };
+                                            collector.emit(agent_thought_event);
+                                        }
+                                    }
+                                }
                             }
                             
                             tool_uses.push(tool_use);

@@ -10,7 +10,7 @@ const BATCH_SIZE: usize = 2;  // Small batch for testing
 const FLUSH_INTERVAL_SECS: u64 = 5;  // Reasonable timer
 const MAX_RETRIES: u32 = 3;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct LangfuseEvent {
     id: String,
     timestamp: String,
@@ -75,17 +75,60 @@ impl LangfuseSink {
     }
 
     pub async fn flush(&self) {
+        // Wait a bit for any final events to arrive
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        
         let (tx, rx) = oneshot::channel();
         if self.flush_tx.send(tx).is_ok() {
             let _ = rx.await;
-            // Give HTTP request extra time to complete before runtime shutdown
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Give extra time for final events to be processed and HTTP requests to complete
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
     pub async fn emit(&self, event: TraceEvent) -> Result<(), Box<dyn std::error::Error>> {
+        // Debug logging
+        match &event {
+            TraceEvent::FinalResponse { turn_index, final_response, .. } => {
+                eprintln!("🔍 Langfuse: Emitting FinalResponse turn {} (len: {})", turn_index, final_response.len());
+            }
+            TraceEvent::ToolExecute { turn_index, tool_calls_executed, .. } => {
+                eprintln!("🔍 Langfuse: Emitting ToolExecute turn {} ({})", turn_index, tool_calls_executed.first().map(|t| t.name.as_str()).unwrap_or("unknown"));
+            }
+            TraceEvent::ToolOutput { turn_index, .. } => {
+                eprintln!("🔍 Langfuse: Emitting ToolOutput turn {}", turn_index);
+            }
+            _ => {}
+        }
         self.tx.send(event)?;
         Ok(())
+    }
+
+    // Helper to create agent coordinator span
+    fn create_agent_coordinator_span(trace_id: uuid::Uuid, turn_index: u32, timestamp_utc: &str) -> LangfuseEvent {
+        let envelope_id = uuid::Uuid::new_v4().to_string();
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        
+        LangfuseEvent {
+            id: envelope_id,
+            timestamp,
+            event_type: "agent-create".to_string(),
+            body: serde_json::json!({
+                "id": format!("{}-turn-{}-agent", trace_id, turn_index),
+                "traceId": trace_id.to_string(),
+                "name": "reasoning_coordinator",
+                "startTime": timestamp_utc,
+                "endTime": timestamp_utc,
+                "input": "reasoning_coordination",
+                "output": "coordination_complete",
+                "metadata": { 
+                    "turn_index": turn_index,
+                    "role": "coordinator",
+                    "reasoning_strategy": "chain_of_thought"
+                },
+                "level": "INFO"
+            }),
+        }
     }
 
     async fn batch_worker(
@@ -100,19 +143,126 @@ impl LangfuseSink {
     ) {
         let mut batch = Vec::new();
         let mut interval = tokio::time::interval(Duration::from_secs(FLUSH_INTERVAL_SECS));
+        let mut agent_spans_created = std::collections::HashSet::new();
+        let mut pending_tools: std::collections::HashMap<String, LangfuseEvent> = std::collections::HashMap::new();
 
         loop {
             tokio::select! {
                 Some(event) = rx.recv() => {
-                    if let Some(lf_event) = Self::map_event(event) {
-                        batch.push(lf_event);
-                        if batch.len() >= BATCH_SIZE {
-                            Self::flush_batch(&client, &api_key, &public_key, &api_url, &mut batch, &success_count, &error_count).await;
+                    // Check if we need to create agent coordinator span first
+                    let needs_agent_span = matches!(event, 
+                        TraceEvent::AgentThought { .. } | 
+                        TraceEvent::ToolExecute { .. }
+                    );
+                    
+                    if needs_agent_span {
+                        let (trace_id, turn_index, timestamp_utc) = match &event {
+                            TraceEvent::AgentThought { trace_id, turn_index, timestamp_utc, .. } => 
+                                (*trace_id, *turn_index, timestamp_utc.clone()),
+                            TraceEvent::ToolExecute { trace_id, turn_index, timestamp_utc, .. } => 
+                                (*trace_id, *turn_index, timestamp_utc.clone()),
+                            _ => unreachable!()
+                        };
+                        
+                        let agent_key = format!("{}-{}", trace_id, turn_index);
+                        if !agent_spans_created.contains(&agent_key) {
+                            let agent_span = Self::create_agent_coordinator_span(trace_id, turn_index, &timestamp_utc);
+                            batch.push(agent_span);
+                            agent_spans_created.insert(agent_key);
                         }
+                    }
+                    
+                    // Handle tool consolidation
+                    let should_add_to_batch = match &event {
+                        TraceEvent::ToolExecute { tool_calls_executed, .. } => {
+                            // Store tool in pending, don't add to batch yet
+                            if let Some(tool_call) = tool_calls_executed.first() {
+                                let tool_key = tool_call.tool_use_id.clone();
+                                if let Some(lf_event) = Self::map_event(event.clone()) {
+                                    pending_tools.insert(tool_key, lf_event);
+                                }
+                            }
+                            false // Don't add to batch
+                        }
+                        TraceEvent::ToolOutput { tool_use_id, tool_output, .. } => {
+                            // Find matching pending tool and merge output
+                            if let Some(mut tool_event) = pending_tools.remove(tool_use_id) {
+                                if let Some(body) = tool_event.body.as_object_mut() {
+                                    body.insert("output".to_string(), serde_json::json!(tool_output));
+                                }
+                                batch.push(tool_event);
+                            }
+                            false // Already added to batch above
+                        }
+                        _ => true // Add other events to batch
+                    };
+                    
+                    if should_add_to_batch {
+                        if let Some(lf_event) = Self::map_event(event) {
+                            batch.push(lf_event);
+                        }
+                    }
+                    
+                    if batch.len() >= BATCH_SIZE {
+                        Self::flush_batch(&client, &api_key, &public_key, &api_url, &mut batch, &success_count, &error_count).await;
                     }
                 }
                 Some(ack) = flush_rx.recv() => {
-                    // Explicit flush requested
+                    // Process any remaining events in the channel before flushing
+                    while let Ok(event) = rx.try_recv() {
+                        // Same logic as above for processing events
+                        let needs_agent_span = matches!(event, 
+                            TraceEvent::AgentThought { .. } | 
+                            TraceEvent::ToolExecute { .. }
+                        );
+                        
+                        if needs_agent_span {
+                            let (trace_id, turn_index, timestamp_utc) = match &event {
+                                TraceEvent::AgentThought { trace_id, turn_index, timestamp_utc, .. } => 
+                                    (*trace_id, *turn_index, timestamp_utc.clone()),
+                                TraceEvent::ToolExecute { trace_id, turn_index, timestamp_utc, .. } => 
+                                    (*trace_id, *turn_index, timestamp_utc.clone()),
+                                _ => unreachable!()
+                            };
+                            
+                            let agent_key = format!("{}-{}", trace_id, turn_index);
+                            if !agent_spans_created.contains(&agent_key) {
+                                let agent_span = Self::create_agent_coordinator_span(trace_id, turn_index, &timestamp_utc);
+                                batch.push(agent_span);
+                                agent_spans_created.insert(agent_key);
+                            }
+                        }
+                        
+                        let should_add_to_batch = match &event {
+                            TraceEvent::ToolExecute { tool_calls_executed, .. } => {
+                                if let Some(tool_call) = tool_calls_executed.first() {
+                                    let tool_key = tool_call.tool_use_id.clone();
+                                    if let Some(lf_event) = Self::map_event(event.clone()) {
+                                        pending_tools.insert(tool_key, lf_event);
+                                    }
+                                }
+                                false
+                            }
+                            TraceEvent::ToolOutput { tool_use_id, tool_output, .. } => {
+                                if let Some(mut tool_event) = pending_tools.remove(tool_use_id) {
+                                    if let Some(body) = tool_event.body.as_object_mut() {
+                                        body.insert("output".to_string(), serde_json::json!(tool_output));
+                                    }
+                                    batch.push(tool_event);
+                                }
+                                false
+                            }
+                            _ => true
+                        };
+                        
+                        if should_add_to_batch {
+                            if let Some(lf_event) = Self::map_event(event) {
+                                batch.push(lf_event);
+                            }
+                        }
+                    }
+                    
+                    // Flush any remaining batch
                     if !batch.is_empty() {
                         Self::flush_batch(&client, &api_key, &public_key, &api_url, &mut batch, &success_count, &error_count).await;
                     }
@@ -219,56 +369,61 @@ impl LangfuseSink {
                 }
             }
             TraceEvent::AgentThought { trace_id, turn_index, timestamp_utc, agent_thought_trace } => {
+                // Create parent agent span for this turn if it's the first thought
+                let agent_span_id = format!("{}-turn-{}-agent", trace_id, turn_index);
+                let chain_span_id = format!("{}-turn-{}-chain", trace_id, turn_index);
+                
+                // Create chain span as child of agent coordinator
                 Some(LangfuseEvent {
                     id: envelope_id,
                     timestamp: timestamp.clone(),
-                    event_type: "span-create".to_string(),
+                    event_type: "chain-create".to_string(),
                     body: serde_json::json!({
-                        "id": format!("{}-turn-{}-thought", trace_id, turn_index),
+                        "id": chain_span_id,
                         "traceId": trace_id.to_string(),
-                        "name": "agent_thought",
+                        "parentObservationId": agent_span_id,
+                        "name": "reasoning_step",
                         "startTime": timestamp_utc,
                         "endTime": timestamp_utc,
-                        "metadata": { "turn_index": turn_index },
+                        "input": { "context": "reasoning_step" },
                         "output": { "thought": agent_thought_trace },
+                        "metadata": { 
+                            "turn_index": turn_index,
+                            "reasoning_strategy": "chain_of_thought",
+                            "step_type": "analysis"
+                        },
                         "level": "DEBUG"
                     }),
                 })
             }
             TraceEvent::ToolExecute { trace_id, turn_index, timestamp_utc, tool_calls_executed } => {
                 let tool_name = tool_calls_executed.first()?.name.clone();
+                let agent_span_id = format!("{}-turn-{}-agent", trace_id, turn_index);
+                
                 Some(LangfuseEvent {
                     id: envelope_id,
                     timestamp: timestamp.clone(),
-                    event_type: "span-create".to_string(),
+                    event_type: "tool-create".to_string(),
                     body: serde_json::json!({
                         "id": format!("{}-turn-{}-tool-{}", trace_id, turn_index, tool_name),
                         "traceId": trace_id.to_string(),
+                        "parentObservationId": agent_span_id,
                         "name": format!("tool_{}", tool_name),
                         "startTime": timestamp_utc,
                         "endTime": timestamp_utc,
-                        "metadata": { "turn_index": turn_index },
                         "input": tool_calls_executed,
+                        "metadata": { 
+                            "turn_index": turn_index,
+                            "tool_name": tool_name,
+                            "permission_granted": true
+                        },
                         "level": "DEFAULT"
                     }),
                 })
             }
-            TraceEvent::ToolOutput { trace_id, turn_index, timestamp_utc, tool_output, .. } => {
-                Some(LangfuseEvent {
-                    id: envelope_id,
-                    timestamp: timestamp.clone(),
-                    event_type: "span-create".to_string(),
-                    body: serde_json::json!({
-                        "id": format!("{}-turn-{}-tool-output", trace_id, turn_index),
-                        "traceId": trace_id.to_string(),
-                        "name": "tool_output",
-                        "startTime": timestamp_utc,
-                        "endTime": timestamp_utc,
-                        "metadata": { "turn_index": turn_index },
-                        "output": { "output": tool_output },
-                        "level": "DEFAULT"
-                    }),
-                })
+            TraceEvent::ToolOutput { .. } => {
+                // Handled by consolidation logic in batch_worker
+                None
             }
             TraceEvent::FinalResponse { trace_id, turn_index, timestamp_utc, final_response } => {
                 // Always create generation for response

@@ -1,21 +1,18 @@
 # Amazon Q CLI Architecture & Trace Retrieval
 
-> **Related Documentation:**
-> - [Roadmap](ROADMAP.md) - Project plan with current status and timeline
-> - [Developer Guide](DEVELOPER_GUIDE.md) - Implementation details and integration points
-> - [User Guide](OBSERVABILITY.md) - Usage, configuration, and troubleshooting
-> - [Langfuse Progress](LANGFUSE_PROGRESS.md) - Current debugging status
-> - [Todo List Feature](docs/todo-lists.md) - Using Q's built-in task management
+do List Feature](docs/todo-lists.md) - Using Q's built-in task management
 
 ## Core Architecture
 
 ### Streaming Protocol
+
 - Amazon Q uses a **streaming event-based protocol** (similar to Lex V2's `StartConversationResponseEventStream`)
 - API likely: `codewhisperer:CreateTaskAssistConversation`
 - Events delivered incrementally over HTTP/2 persistent connection
 - Client abstracts intermediate events (CoT, tool proposals) and renders only final response
 
 ### Technology Stack
+
 - **Language**: Rust (compiled binary for performance)
 - **SDK**: AWS SDK for Rust
 - **Logging**: Uses `tracing` crate (controlled via `RUST_LOG` env var)
@@ -24,6 +21,7 @@
 ## Internal Data Structures
 
 ### API Response Payload Contains
+
 1. **Chain of Thought (CoT)**: Step-by-step reasoning (field like `thought_process` or `intermediate_steps`)
 2. **Tool Proposals**: Structured objects with:
    - Tool name
@@ -33,6 +31,7 @@
 4. **Final Response**: User-facing text
 
 ### Evidence of Structured Payloads
+
 - CLI supports `--trust-tools=fs_read,fs_write` (requires structured tool names)
 - Permission prompts for tool execution (requires parsing tool proposals)
 - `/reply` command for quoting specific agent points (requires structured turn tracking)
@@ -40,14 +39,18 @@
 ## Trace Retrieval Strategies
 
 ### Tier 1: Non-Invasive (RUST_LOG)
+
 ```bash
 RUST_LOG=trace q chat "question" 2> raw_api_dump.log
 ```
+
 **Pros**: No code changes  
 **Cons**: Unstructured logs, heavy post-processing, fragile parsing
 
 ### Tier 2: Source Modification (Recommended)
+
 Inject JSON emitter hook in stream handler:
+
 1. Locate conversation stream processing loop
 2. Identify event structs for CoT and tool calls
 3. Serialize to JSONL: `serde_json::to_string(&event)`
@@ -58,20 +61,24 @@ Inject JSON emitter hook in stream handler:
 ## Key Integration Points
 
 ### 1. Stream Handler
+
 - **Location**: Function calling `CreateTaskAssistConversation`
 - **Hook**: Deserialize events, emit to JSONL before rendering
 
 ### 2. Input Parser
+
 - **Location**: Terminal input loop handling `/reply` command
 - **Hook**: Emit `user_interrupt` events with correction text
 
 ### 3. Tool Executor
+
 - **Location**: Logic requesting user permission for tools
 - **Hook**: Log tool lifecycle (propose → confirm → execute → result)
 
 ## ACE Schema Requirements (JSONL)
 
 Required fields per line:
+
 ```json
 {
   "trace_id": "uuid",
@@ -90,10 +97,12 @@ Required fields per line:
 ## Constraints
 
 ### Non-Negotiable
+
 - **Client-side only**: No AWS account access, no CloudWatch/S3
 - **No server-side telemetry**: All logging must happen locally
 
 ### Maintenance Risks
+
 - AWS SDK internal structs may change without notice
 - Custom binary requires monitoring for SDK updates
 - License compliance review required before distribution
@@ -103,7 +112,21 @@ Required fields per line:
 - `-v, -vv, -vvv, -vvvv`: Verbosity levels (insufficient for structured data)
 - `--trust-all-tools`: Global tool permission (bypasses prompts)
 - `--trust-tools=<list>`: Selective tool trust
+- `--no-interactive`: Non-interactive mode (essential for automated testing)
 - `/reply`: Quote and respond to specific agent points (high-fidelity feedback)
+
+### **IMPORTANT: Automated Testing Flags**
+
+For automated testing and CI/CD, always use:
+
+```bash
+q chat --no-interactive --trust-all-tools --trace --langfuse "your question"
+```
+
+- `--no-interactive`: Prevents waiting for user input/confirmations
+- `--trust-all-tools`: Auto-approves all tool executions
+- `--trace`: Enables JSONL trace logging
+- `--langfuse`: Enables Langfuse OpenTelemetry export
 
 ## Next Steps for Implementation
 

@@ -417,6 +417,17 @@ impl ResponseParser {
                     ChatResponseStream::InvalidStateEvent { reason, message } => {
                         error!(%reason, %message, "invalid state event");
                     },
+                    ChatResponseStream::ReasoningContentEvent { text, redacted_content, .. } => {
+                        if let Some(reasoning_text) = text {
+                            trace!("Received reasoning content: {}", reasoning_text);
+                            return Ok(ResponseEvent::ReasoningContent(reasoning_text));
+                        }
+                        // Handle redacted content if needed
+                        if redacted_content.is_some() {
+                            trace!("Received redacted reasoning content");
+                            return Ok(ResponseEvent::ReasoningContent("[Redacted reasoning content]".to_string()));
+                        }
+                    },
                     ChatResponseStream::ToolUseEvent {
                         tool_use_id,
                         name,
@@ -669,6 +680,8 @@ impl ResponseParser {
 pub enum ResponseEvent {
     /// Text returned by the assistant. This should be displayed to the user as it is received.
     AssistantText(String),
+    /// Chain of thought reasoning content from the assistant.
+    ReasoningContent(String),
     /// Notification that a tool use is being received.
     ToolUseStart { name: String },
     /// A tool use requested by the assistant. This should be displayed to the user as it is

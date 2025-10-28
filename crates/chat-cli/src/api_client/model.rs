@@ -563,6 +563,12 @@ pub enum ChatResponseStream {
         conversation_id: Option<String>,
         utterance_id: Option<String>,
     },
+    /// Chain of thought reasoning content from the assistant.
+    ReasoningContentEvent {
+        text: Option<String>,
+        redacted_content: Option<Vec<u8>>,
+        signature: Option<String>,
+    },
     SupplementaryWebLinksEvent(()),
     ToolUseEvent {
         tool_use_id: String,
@@ -623,6 +629,13 @@ impl From<amzn_codewhisperer_streaming_client::types::ChatResponseStream> for Ch
                 input,
                 stop,
             },
+            amzn_codewhisperer_streaming_client::types::ChatResponseStream::ReasoningContentEvent(
+                reasoning_event,
+            ) => ChatResponseStream::ReasoningContentEvent {
+                text: reasoning_event.text().map(|s| s.to_string()),
+                redacted_content: reasoning_event.redacted_content().map(|blob| blob.as_ref().to_vec()),
+                signature: reasoning_event.signature().map(|s| s.to_string()),
+            },
             amzn_codewhisperer_streaming_client::types::ChatResponseStream::SupplementaryWebLinksEvent(_) => {
                 ChatResponseStream::SupplementaryWebLinksEvent(())
             },
@@ -678,6 +691,13 @@ impl From<amzn_qdeveloper_streaming_client::types::ChatResponseStream> for ChatR
                 name,
                 input,
                 stop,
+            },
+            amzn_qdeveloper_streaming_client::types::ChatResponseStream::ReasoningContentEvent(
+                reasoning_event,
+            ) => ChatResponseStream::ReasoningContentEvent {
+                text: reasoning_event.text().map(|s| s.to_string()),
+                redacted_content: reasoning_event.redacted_content().map(|blob| blob.as_ref().to_vec()),
+                signature: reasoning_event.signature().map(|s| s.to_string()),
             },
             amzn_qdeveloper_streaming_client::types::ChatResponseStream::SupplementaryWebLinksEvent(_) => {
                 ChatResponseStream::SupplementaryWebLinksEvent(())

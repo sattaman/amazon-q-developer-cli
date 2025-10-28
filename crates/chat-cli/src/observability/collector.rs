@@ -1,4 +1,4 @@
-use super::{config::ObservabilityConfig, events::TraceEvent, sinks::jsonl::JsonlSink, sinks::langfuse::LangfuseSink};
+use super::{config::ObservabilityConfig, events::TraceEvent, sinks::jsonl::JsonlSink, sinks::langfuse_otel::LangfuseOtelSink};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -7,7 +7,7 @@ pub struct TraceCollector {
     trace_id: Uuid,
     turn_index: Arc<std::sync::atomic::AtomicU32>,
     tx: mpsc::UnboundedSender<TraceEvent>,
-    langfuse_sink: Option<Arc<LangfuseSink>>,
+    langfuse_sink: Option<Arc<LangfuseOtelSink>>,
 }
 
 impl TraceCollector {
@@ -19,16 +19,13 @@ impl TraceCollector {
             let sink = JsonlSink::new(config.output_dir.clone(), trace_id);
             let langfuse_sink = if let (Some(secret_key), Some(public_key)) = 
                 (&config.langfuse_api_key, &config.langfuse_public_key) {
-                eprintln!("🔗 Initializing Langfuse sink...");
-                match LangfuseSink::new(
+                eprintln!("🔗 Initializing Langfuse OpenTelemetry sink...");
+                match LangfuseOtelSink::new(
                     secret_key.clone(), 
                     public_key.clone(), 
                     config.langfuse_api_url.clone()
                 ) {
-                    Ok(sink) => {
-                        eprintln!("✅ Langfuse sink initialized");
-                        Some(Arc::new(sink))
-                    },
+                    Ok(sink) => Some(Arc::new(sink)),
                     Err(e) => {
                         eprintln!("⚠️  Failed to initialize Langfuse: {}", e);
                         tracing::error!("Failed to create Langfuse sink: {}", e);
@@ -93,8 +90,13 @@ impl TraceCollector {
     }
     
     pub async fn flush(&self) {
+        eprintln!("🔄 Collector flush called");
         if let Some(ref lf) = self.langfuse_sink {
+            eprintln!("   Calling Langfuse sink flush...");
             lf.flush().await;
+        } else {
+            eprintln!("   No Langfuse sink to flush");
         }
+        eprintln!("✅ Collector flush complete");
     }
 }

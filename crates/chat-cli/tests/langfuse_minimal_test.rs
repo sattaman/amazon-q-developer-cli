@@ -26,7 +26,7 @@ async fn test_langfuse_connection() {
 
     let resp = reqwest::Client::new()
         .post("http://localhost:3000/api/public/ingestion")
-        .basic_auth("pk-lf-90d38562-6e32-4b81-92cb-ff01dc8b99d8", Some("sk-lf-355fb37d-0f10-4e8f-88eb-ab7bfe47baeb"))
+        .basic_auth("pk-lf-your-public-key", Some("sk-lf-your-secret-key"))
         .json(&batch)
         .send()
         .await
