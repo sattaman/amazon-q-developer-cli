@@ -336,7 +336,7 @@ impl LangfuseSink {
         let timestamp = chrono::Utc::now().to_rfc3339();
         
         match event {
-            TraceEvent::UserPrompt { trace_id, turn_index, timestamp_utc, user_input } => {
+            TraceEvent::UserPrompt { trace_id, turn_index, timestamp_utc, user_input, .. } => {
                 if turn_index == 0 {
                     // Create trace with user input
                     Some(LangfuseEvent {
@@ -368,7 +368,7 @@ impl LangfuseSink {
                     })
                 }
             }
-            TraceEvent::AgentThought { trace_id, turn_index, timestamp_utc, agent_thought_trace } => {
+            TraceEvent::AgentThought { trace_id, turn_index, timestamp_utc, agent_thought_trace, .. } => {
                 // Create parent agent span for this turn if it's the first thought
                 let agent_span_id = format!("{}-turn-{}-agent", trace_id, turn_index);
                 let chain_span_id = format!("{}-turn-{}-chain", trace_id, turn_index);
@@ -396,7 +396,7 @@ impl LangfuseSink {
                     }),
                 })
             }
-            TraceEvent::ToolExecute { trace_id, turn_index, timestamp_utc, tool_calls_executed } => {
+            TraceEvent::ToolExecute { trace_id, turn_index, timestamp_utc, tool_calls_executed, .. } => {
                 let tool_name = tool_calls_executed.first()?.name.clone();
                 let agent_span_id = format!("{}-turn-{}-agent", trace_id, turn_index);
                 
@@ -425,7 +425,7 @@ impl LangfuseSink {
                 // Handled by consolidation logic in batch_worker
                 None
             }
-            TraceEvent::FinalResponse { trace_id, turn_index, timestamp_utc, final_response } => {
+            TraceEvent::FinalResponse { trace_id, turn_index, timestamp_utc, final_response, .. } => {
                 // Always create generation for response
                 Some(LangfuseEvent {
                     id: envelope_id,

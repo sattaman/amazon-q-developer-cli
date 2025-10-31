@@ -17,12 +17,19 @@ pub struct ObservabilityConfig {
 
 impl Default for ObservabilityConfig {
     fn default() -> Self {
-        Self {
-            enabled: false,
-            output_dir: dirs::home_dir()
+        // Try local .amazonq/traces first, fallback to ~/.q/traces
+        let output_dir = if std::path::Path::new(".amazonq").exists() {
+            std::path::PathBuf::from(".amazonq/traces")
+        } else {
+            dirs::home_dir()
                 .unwrap_or_default()
                 .join(".q")
-                .join("traces"),
+                .join("traces")
+        };
+
+        Self {
+            enabled: false,
+            output_dir,
             langfuse_api_key: None,
             langfuse_public_key: None,
             langfuse_api_url: None,

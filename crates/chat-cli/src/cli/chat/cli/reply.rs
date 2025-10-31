@@ -107,6 +107,7 @@ impl ReplyArgs {
                             timestamp_utc: chrono::Utc::now().to_rfc3339(),
                             interrupt_flag: true,
                             user_input: content.clone(),
+                            app_context: crate::observability::events::AppContext::default(),
                         };
                         collector.emit(event);
                     }

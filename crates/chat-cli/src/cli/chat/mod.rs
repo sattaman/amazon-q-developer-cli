@@ -831,6 +831,20 @@ impl ChatSession {
                     res = self.handle_response(os, conversation_state, request_metadata_clone) => res,
                     Ok(_) = ctrl_c_stream.recv() => {
                         debug!(?request_metadata, "ctrlc received");
+                        
+                        // Emit trace event for user interrupt
+                        if let Some(ref collector) = self.trace_collector {
+                            let event = crate::observability::TraceEvent::UserInterrupt {
+                                trace_id: collector.trace_id(),
+                                turn_index: collector.current_turn(),
+                                timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                                interrupt_flag: true,
+                                user_input: "Ctrl+C interrupt".to_string(),
+                                app_context: crate::observability::events::AppContext::default(),
+                            };
+                            collector.emit(event);
+                        }
+                        
                         // Wait for handle_response to finish handling the ctrlc.
                         tokio::time::sleep(Duration::from_millis(5)).await;
                         if let Some(request_metadata) = request_metadata.lock().await.take() {
@@ -1430,6 +1444,20 @@ impl ChatSession {
             res = self.compact_history_impl(os, custom_prompt, show_summary, strategy, request_metadata_clone) => res,
             Ok(_) = ctrl_c_stream.recv() => {
                 debug!(?request_metadata, "ctrlc received in compact history");
+                
+                // Emit trace event for user interrupt
+                if let Some(ref collector) = self.trace_collector {
+                    let event = crate::observability::TraceEvent::UserInterrupt {
+                        trace_id: collector.trace_id(),
+                        turn_index: collector.current_turn(),
+                        timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                        interrupt_flag: true,
+                        user_input: "Ctrl+C interrupt during compact history".to_string(),
+                        app_context: crate::observability::events::AppContext::default(),
+                    };
+                    collector.emit(event);
+                }
+                
                 // Wait for handle_response to finish handling the ctrlc.
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 if let Some(request_metadata) = request_metadata.lock().await.take() {
@@ -1718,6 +1746,20 @@ impl ChatSession {
             res = self.generate_agent_config_impl(os, agent_name, agent_description, selected_servers, schema, is_global, request_metadata_clone) => res,
             Ok(_) = ctrl_c_stream.recv() => {
                 debug!(?request_metadata, "ctrlc received in generate agent config");
+                
+                // Emit trace event for user interrupt
+                if let Some(ref collector) = self.trace_collector {
+                    let event = crate::observability::TraceEvent::UserInterrupt {
+                        trace_id: collector.trace_id(),
+                        turn_index: collector.current_turn(),
+                        timestamp_utc: chrono::Utc::now().to_rfc3339(),
+                        interrupt_flag: true,
+                        user_input: "Ctrl+C interrupt during agent config generation".to_string(),
+                        app_context: crate::observability::events::AppContext::default(),
+                    };
+                    collector.emit(event);
+                }
+                
                 // Wait for handle_response to finish handling the ctrlc.
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 if let Some(request_metadata) = request_metadata.lock().await.take() {
@@ -2029,6 +2071,7 @@ impl ChatSession {
                 turn_index: collector.current_turn(),
                 timestamp_utc: chrono::Utc::now().to_rfc3339(),
                 user_input: input.to_string(),
+                app_context: crate::observability::events::AppContext::default(),
             };
             collector.emit(event);
         }
@@ -2708,6 +2751,7 @@ impl ChatSession {
                         timestamp_utc: chrono::Utc::now().to_rfc3339(),
                         tool_use_id: result.tool_use_id.clone(),
                         tool_output: output,
+                        app_context: crate::observability::events::AppContext::default(),
                     };
                     collector.emit(event);
                 }
@@ -2827,6 +2871,7 @@ impl ChatSession {
                                     turn_index: collector.current_turn(),
                                     timestamp_utc: chrono::Utc::now().to_rfc3339(),
                                     agent_thought_trace: reasoning_text.clone(),
+                                    app_context: crate::observability::events::AppContext::default(),
                                 };
                                 collector.emit(event);
                             }
@@ -2856,6 +2901,7 @@ impl ChatSession {
                                     turn_index: collector.current_turn(),
                                     timestamp_utc: chrono::Utc::now().to_rfc3339(),
                                     tool_calls_executed: vec![tool_call],
+                                    app_context: crate::observability::events::AppContext::default(),
                                 };
                                 collector.emit(event);
                                 
@@ -2868,6 +2914,7 @@ impl ChatSession {
                                                 turn_index: collector.current_turn(),
                                                 timestamp_utc: chrono::Utc::now().to_rfc3339(),
                                                 agent_thought_trace: thought_text.to_string(),
+                                                app_context: crate::observability::events::AppContext::default(),
                                             };
                                             collector.emit(agent_thought_event);
                                         }
@@ -2895,6 +2942,7 @@ impl ChatSession {
                                     turn_index: collector.current_turn(),
                                     timestamp_utc: chrono::Utc::now().to_rfc3339(),
                                     final_response: message.content().to_string(),
+                                    app_context: crate::observability::events::AppContext::default(),
                                 };
                                 collector.emit(event);
                                 collector.increment_turn();
